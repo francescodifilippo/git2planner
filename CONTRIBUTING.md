@@ -37,7 +37,9 @@ pytest --cov
 ## Releasing
 
 1. Update `__version__` in `src/git2planner/__init__.py` and the changelog.
-2. Commit, then tag: `git tag v1.2.3 && git push origin v1.2.3`.
+2. Commit, then either push a tag (`git tag v1.2.3 && git push origin v1.2.3`)
+   or start the **Release** workflow from the Actions tab, which tags the
+   current commit with the version from `__init__.py`.
 3. The release workflow builds the package, creates the GitHub release,
    moves the major tag (`v1`) used by the GitHub Action, and publishes the
    Docker image to GHCR. It also publishes to PyPI when the repository

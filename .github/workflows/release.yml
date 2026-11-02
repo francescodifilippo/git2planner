@@ -1,15 +1,25 @@
 name: Release
 
+# Runs when a version tag is pushed, or manually from the Actions tab
+# ("Run workflow"): the manual run tags the current commit with the version
+# found in src/git2planner/__init__.py.
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,11 +27,16 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]" build
       - run: ruff check . && mypy && pytest -q
-      - name: Check that the tag matches the package version
+      - name: Determine the release tag
+        id: version
         run: |
           version="$(python -c 'import git2planner; print(git2planner.__version__)')"
-          test "v${version}" = "${GITHUB_REF_NAME}" || {
-            echo "tag ${GITHUB_REF_NAME} does not match version ${version}"; exit 1; }
+          tag="v${version}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "${tag}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match version ${version}"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
       - run: python -m build
       - uses: actions/upload-artifact@v4
         with:
@@ -33,32 +48,51 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Create the version tag (manual runs)
+        if: github.ref_type != 'tag'
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null; then
+            existing="$(git rev-list -n 1 "refs/tags/${TAG}" 2>/dev/null || true)"
+            if [ -n "$existing" ] && [ "$existing" != "$GITHUB_SHA" ]; then
+              echo "${TAG} already points to ${existing}, not ${GITHUB_SHA}; bump the version first"
+              exit 1
+            fi
+          else
+            git tag "${TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TAG}"
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
       - name: Extract release notes from the changelog
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           awk -v version="$version" '
             $0 ~ "^## \\[" version "\\]" { found = 1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md > notes.md
-          test -s notes.md || echo "Release ${GITHUB_REF_NAME}" > notes.md
-      - name: Create the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
+          test -s notes.md || echo "Release ${TAG}" > notes.md
+      - name: Create or update the GitHub release
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "git2planner $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "git2planner $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* \
+              --title "git2planner $TAG" --notes-file notes.md --verify-tag
+          fi
       - name: Move the major version tag used by the GitHub Action
         run: |
-          major="${GITHUB_REF_NAME%%.*}"
+          major="${TAG%%.*}"
           git tag -f "$major" "$GITHUB_SHA"
           git push -f origin "refs/tags/$major"
 
@@ -81,9 +115,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ needs.build.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.build.outputs.tag }}
             type=raw,value=latest
       - uses: docker/build-push-action@v6
         with:
