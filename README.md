@@ -172,7 +172,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: git2planner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/cache@v4
         with:
           path: .git2planner

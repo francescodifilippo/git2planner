@@ -34,7 +34,7 @@ def test_minimal_config_defaults():
     assert sync.priority.default == 5
     assert sync.planner_to_git.fields == list(DEFAULT_PULL_FIELDS)
     assert config.graph.resolved_auth() == "client_secret"
-    assert str(config.state_path).endswith(".git2planner/state.json")
+    assert config.state_path.as_posix().endswith(".git2planner/state.json")
 
 
 def test_environment_interpolation_and_defaults():

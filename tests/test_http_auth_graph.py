@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from urllib.parse import parse_qs
 
 import pytest
@@ -222,7 +223,8 @@ def test_device_code_flow_and_refresh(tmp_path):
     assert credential.get_token() == "a1"
     assert messages == ["Go to https://microsoft.com/devicelogin"]
     assert json.loads(cache.read_text())["refresh_token"] == "r1"
-    assert oct(cache.stat().st_mode & 0o777) == "0o600"
+    if os.name == "posix":
+        assert oct(cache.stat().st_mode & 0o777) == "0o600"
 
     responses.post(
         f"{base}/token", json={"access_token": "a2", "refresh_token": "r2", "expires_in": 3600}
