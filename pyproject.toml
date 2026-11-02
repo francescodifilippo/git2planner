@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "git2planner"
+dynamic = ["version"]
+description = "Sync Git issues (GitHub, Gitea, Forgejo) to Microsoft Planner tasks with category mapping, assignee resolution and attachment handling."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "FrancescoDF" }]
+requires-python = ">=3.10"
+keywords = ["microsoft-planner", "microsoft-graph", "github", "gitea", "forgejo", "issues", "sync", "microsoft-365"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Scheduling",
+    "Topic :: Software Development :: Bug Tracking",
+    "Typing :: Typed",
+]
+dependencies = [
+    "requests>=2.28",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "responses>=0.24",
+    "ruff>=0.5",
+    "mypy>=1.8",
+    "types-requests",
+    "types-PyYAML",
+]
+
+[project.scripts]
+git2planner = "git2planner.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/francescodifilippo/git2planner"
+Documentation = "https://github.com/francescodifilippo/git2planner#readme"
+Issues = "https://github.com/francescodifilippo/git2planner/issues"
+Changelog = "https://github.com/francescodifilippo/git2planner/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/git2planner/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/git2planner"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/git2planner",
+    "tests",
+    "docs",
+    "examples",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["git2planner"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "PL", "PT", "RET"]
+ignore = [
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR0917",
+    "PLR2004",
+    "PLW0603",
+    "PLW2901",
+    "PLC0415",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLC0415", "PLR2004", "S101"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+files = ["src/git2planner"]
