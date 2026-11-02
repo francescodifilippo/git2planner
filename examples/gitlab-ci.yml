@@ -1,0 +1,16 @@
+# .gitlab-ci.yml — run it from a pipeline schedule (Build → Pipeline schedules)
+git2planner:
+  image: python:3.12
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  resource_group: git2planner
+  cache:
+    key: git2planner
+    paths: [.git2planner/]
+  script:
+    - pip install --quiet "git2planner @ git+https://github.com/francescodifilippo/git2planner@v1.0.0"
+    - git2planner -c git2planner.yml sync
+  # Define these as masked CI/CD variables:
+  #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+  #   GITLAB_TOKEN  (project access token with read_api, or api for two-way sync)

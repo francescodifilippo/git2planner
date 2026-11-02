@@ -1,0 +1,31 @@
+# .gitea/workflows/git2planner.yml  (Gitea Actions)
+# .forgejo/workflows/git2planner.yml (Forgejo Actions)
+name: git2planner
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: .git2planner
+          key: git2planner-${{ github.run_id }}
+          restore-keys: git2planner-
+      - run: pip install "git2planner @ git+https://github.com/francescodifilippo/git2planner@v1.0.0"
+      - run: git2planner -c git2planner.yml sync
+        env:
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          # Token with read:issue (write:issue for two-way sync), read:repository and read:user.
+          # Use FORGEJO_TOKEN on Forgejo.
+          GITEA_TOKEN: ${{ secrets.GIT2PLANNER_TOKEN }}
