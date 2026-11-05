@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v5
 
       # Keeps the state file (issue <-> task baselines) between runs.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .git2planner
           key: git2planner-${{ github.run_id }}

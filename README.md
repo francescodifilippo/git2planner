@@ -173,7 +173,7 @@ jobs:
     concurrency: git2planner
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .git2planner
           key: git2planner-${{ github.run_id }}
