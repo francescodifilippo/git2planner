@@ -166,10 +166,20 @@ class CategoryMapper:
 # --------------------------------------------------------------------------- buckets
 
 
-def bucket_name_for(issue: Issue, config: BucketConfig) -> str:
-    """Pick the bucket *name* an issue belongs to."""
+def bucket_name_for(issue: Issue, config: BucketConfig, column: str | None = None) -> str:
+    """Pick the bucket *name* an issue belongs to.
+
+    ``column`` is the issue's column on the project board (``board`` strategy).
+    """
     if not issue.is_open and config.closed:
         return config.closed
+    if config.strategy == "board":
+        if column:
+            for name, bucket in config.mapping.items():
+                if name.strip().lower() == column.strip().lower():
+                    return bucket
+            return column
+        return config.default
     if config.strategy == "label":
         lowered = {name.lower() for name in issue.label_names}
         for label, bucket in config.mapping.items():
@@ -182,6 +192,16 @@ def bucket_name_for(issue: Issue, config: BucketConfig) -> str:
                 return bucket
         return title
     return config.default
+
+
+def column_for_bucket(config: BucketConfig, bucket_name: str, columns: list[str]) -> str | None:
+    """The board column shown as ``bucket_name`` in Planner (``board`` strategy)."""
+    wanted = bucket_name.strip().lower()
+    by_name = {column.strip().lower(): column for column in columns}
+    for column, bucket in config.mapping.items():
+        if bucket.strip().lower() == wanted and column.strip().lower() in by_name:
+            return by_name[column.strip().lower()]
+    return by_name.get(wanted)
 
 
 def bucket_label(config: BucketConfig, bucket_name: str) -> str | None:

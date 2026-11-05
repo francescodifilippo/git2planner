@@ -66,11 +66,13 @@ defaults:
     include_pull_requests: false
 
   buckets:
-    strategy: fixed             # fixed | label | milestone
+    strategy: fixed             # fixed | label | milestone | board (project board columns)
     default: To do
     closed: Done                # closed issues move here (remove to keep their bucket)
-    # mapping:                  # label -> bucket (label strategy), milestone -> bucket
+    # mapping:                  # label, milestone or board column -> bucket
     #   bug: Bugs
+    # board:                    # board strategy: GitHub Projects, Gitea 28+, GitLab boards
+    #   project: 1              # project number (GitHub), id or title (Gitea), board (GitLab)
 
   categories:
     mode: auto                  # auto: each label gets a Planner label | explicit | off
@@ -102,7 +104,7 @@ defaults:
   on_close: complete            # complete | delete | ignore
 
   planner_to_git:
-    fields: [state, title, assignees, labels, due_date, checklist]
+    fields: [state, title, assignees, labels, bucket, due_date, checklist]
     create_issues: false        # open issues for tasks created in Planner
 
 syncs:

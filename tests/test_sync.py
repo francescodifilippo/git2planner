@@ -529,3 +529,102 @@ def test_tasks_of_other_syncs_never_become_issues(planner, store):
     lost = StateStore(None)
     (report,) = SyncEngine(config, planner, lost, provider_factory=factory).run(["b"])
     assert report.issues_created == 0
+
+
+# --------------------------------------------------------------------------- project boards
+
+BOARD = {
+    "buckets": {
+        "strategy": "board",
+        "board": {"project": "1"},
+        "default": "Backlog",
+        "closed": None,
+        "mapping": {"Todo": "To do"},
+    }
+}
+
+
+def board_setup(provider):
+    from .fakes import FakeBoard
+
+    provider.board = FakeBoard(["Todo", "In Progress", "Done"], {1: "In Progress", 3: "Todo"})
+    provider.add(1, "on the board")
+    provider.add(2, "not on the board")
+    provider.add(3, "renamed column")
+    return provider.board
+
+
+def bucket_of(planner, number):
+    task = next(t for t in planner.tasks.values() if t["title"].startswith(f"#{number} "))
+    return bucket_name(planner, task["bucketId"]), task
+
+
+def test_board_columns_become_buckets(planner, provider, run):
+    board_setup(provider)
+    assert run(make_config(**BOARD)).created == 3
+    assert bucket_of(planner, 1)[0] == "In Progress"
+    assert bucket_of(planner, 2)[0] == "Backlog"
+    assert bucket_of(planner, 3)[0] == "To do"
+
+
+def test_moving_a_card_moves_the_task(planner, provider, run):
+    board = board_setup(provider)
+    run(make_config(**BOARD))
+    board.items[1] = "Done"
+    report = run(make_config(**BOARD))
+    assert report.updated == 1
+    assert bucket_of(planner, 1)[0] == "Done"
+
+
+def test_moving_a_task_moves_the_card_without_bouncing(planner, provider, run):
+    board = board_setup(provider)
+    config = make_config(direction="both", **BOARD)
+    run(config)
+    to_do = next(b for b, v in planner.buckets.items() if v["name"] == "To do")
+    _, task = bucket_of(planner, 1)
+    task["bucketId"] = to_do
+    planner.calls.clear()
+
+    report = run(config)
+    assert report.pulled == 1
+    assert board.items[1] == "Todo"
+    assert not [c for c in planner.calls if c[0] == "update_task"]
+    assert run(config).pulled == 0
+    assert board.moves == [(1, "Todo")]
+
+
+def test_task_in_unmapped_bucket_leaves_the_board_alone(planner, provider, run):
+    board = board_setup(provider)
+    config = make_config(direction="both", **BOARD)
+    run(config)
+    _, task = bucket_of(planner, 1)
+    task["bucketId"] = planner.add_bucket("Someday")
+    report = run(config)
+    assert report.ok
+    assert board.moves == []
+    assert board.items[1] == "In Progress"
+
+
+def test_new_planner_task_lands_in_the_matching_column(planner, provider, run):
+    from .fakes import FakeBoard
+
+    provider.board = FakeBoard(["Todo", "In Progress"])
+    doing = planner.add_bucket("In Progress")
+    planner.add_task("Prepare the demo", bucketId=doing)
+    config = make_config(direction="both", planner_to_git={"create_issues": True}, **BOARD)
+    report = run(config)
+    assert report.issues_created == 1
+    assert provider.board.items == {1: "In Progress"}
+    assert bucket_of(planner, 1)[0] == "In Progress"
+
+
+def test_completing_a_task_moves_the_card_to_the_closed_column(planner, provider, run):
+    board = board_setup(provider)
+    config = make_config(direction="both", buckets={**BOARD["buckets"], "closed": "Done"})
+    run(config)
+    _, task = bucket_of(planner, 1)
+    task["percentComplete"] = 100
+    run(config)
+    assert provider.issues[1].state == "closed"
+    assert board.items[1] == "Done"
+    assert bucket_of(planner, 1)[0] == "Done"

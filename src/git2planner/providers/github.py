@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from ..errors import Git2PlannerError
+from ..config import BoardConfig
+from ..errors import Git2PlannerError, HTTPError
 from ..http import HttpClient, StaticHeaderAuth
 from ..models import (
     GitUser,
@@ -20,7 +21,7 @@ from ..models import (
     format_datetime,
     parse_datetime,
 )
-from .base import IssueProvider
+from .base import Board, IssueProvider
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,103 @@ _ATTACHMENT_HOSTS = frozenset(
 _ATTACHMENT_PATH = re.compile(
     r"^/(?:user-attachments/(?:assets|files)/|[^/]+/[^/]+/(?:files|assets)/\d+/)"
 )
+
+
+_PROJECT_QUERY = """
+query($owner: String!, $number: Int!, $field: String!, $cursor: String) {
+  repositoryOwner(login: $owner) {
+    ... on ProjectV2Owner {
+      projectV2(number: $number) {
+        id
+        title
+        field(name: $field) {
+          ... on ProjectV2SingleSelectField { id name options { id name } }
+        }
+        items(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            fieldValueByName(name: $field) {
+              ... on ProjectV2ItemFieldSingleSelectValue { name }
+            }
+            content {
+              ... on Issue { number repository { nameWithOwner } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_ADD_ITEM = """
+mutation($project: ID!, $content: ID!) {
+  addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
+}
+"""
+
+_SET_COLUMN = """
+mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+  updateProjectV2ItemFieldValue(
+    input: {projectId: $project, itemId: $item, fieldId: $field,
+            value: {singleSelectOptionId: $option}}
+  ) { projectV2Item { id } }
+}
+"""
+
+
+class GitHubProjectBoard(Board):
+    """A GitHub Projects board: columns are the options of a single-select field."""
+
+    def __init__(
+        self,
+        provider: GitHubProvider,
+        project_id: str,
+        title: str,
+        field_id: str,
+        options: dict[str, str],
+        items: dict[int, tuple[str, str | None]],
+    ) -> None:
+        super().__init__(title, list(options))
+        self.provider = provider
+        self.project_id = project_id
+        self.field_id = field_id
+        self.options = options
+        self.items = items
+
+    def column_of(self, issue: Issue) -> str | None:
+        entry = self.items.get(issue.number)
+        return entry[1] if entry else None
+
+    def move(self, issue: Issue, column: str | None) -> Issue:
+        if column is None or column not in self.options:
+            return issue
+        entry = self.items.get(issue.number)
+        if entry is None:
+            node_id = issue.node_id
+            if node_id is None:
+                fresh = self.provider.get_issue(issue.number)
+                node_id = fresh.node_id if fresh else None
+            if node_id is None:
+                raise Git2PlannerError(f"cannot add issue #{issue.number} to the project")
+            data = self.provider.graphql(
+                _ADD_ITEM, {"project": self.project_id, "content": node_id}
+            )
+            item_id = str(data["addProjectV2ItemById"]["item"]["id"])
+        else:
+            item_id = entry[0]
+        self.provider.graphql(
+            _SET_COLUMN,
+            {
+                "project": self.project_id,
+                "item": item_id,
+                "field": self.field_id,
+                "option": self.options[column],
+            },
+        )
+        self.items[issue.number] = (item_id, column)
+        return issue
 
 
 class GitHubProvider(IssueProvider):
@@ -100,6 +198,7 @@ class GitHubProvider(IssueProvider):
             author=GitUser(login=str(user["login"])) if user and user.get("login") else None,
             is_pull_request="pull_request" in data,
             state_reason=data.get("state_reason"),
+            node_id=str(data["node_id"]) if data.get("node_id") else None,
         )
 
     def iter_issues(
@@ -155,6 +254,67 @@ class GitHubProvider(IssueProvider):
         if host in _ATTACHMENT_HOSTS:
             return True
         return host == urlparse(self.web_url).hostname and bool(_ATTACHMENT_PATH.match(parsed.path))
+
+    # ------------------------------------------------------------------ projects
+
+    @property
+    def graphql_url(self) -> str:
+        if self.api_url == PUBLIC_API:
+            return f"{PUBLIC_API}/graphql"
+        return f"{self._web_url}/api/graphql"
+
+    def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        payload = self.http.request(
+            "POST", self.graphql_url, json={"query": query, "variables": variables}
+        ).json()
+        errors = payload.get("errors")
+        if errors:
+            messages = "; ".join(str(error.get("message", error)) for error in errors)
+            raise HTTPError(f"GitHub GraphQL: {messages}", url=self.graphql_url)
+        data: dict[str, Any] = payload.get("data") or {}
+        return data
+
+    def load_board(self, config: BoardConfig) -> Board:
+        number = int(str(config.project))
+        owner = config.owner or self.config.owner
+        variables: dict[str, Any] = {"owner": owner, "number": number, "field": config.field}
+        items: dict[int, tuple[str, str | None]] = {}
+        project: dict[str, Any] = {}
+        while True:
+            data = self.graphql(_PROJECT_QUERY, variables)
+            project = (data.get("repositoryOwner") or {}).get("projectV2") or {}
+            if not project:
+                raise Git2PlannerError(
+                    f"GitHub project {owner}/{number} not found or not readable "
+                    "(the token needs the 'project' or 'read:project' scope)"
+                )
+            field = project.get("field") or {}
+            if "options" not in field:
+                raise Git2PlannerError(
+                    f"field {config.field!r} of GitHub project {owner}/{number} "
+                    "is missing or not a single-select field"
+                )
+            for node in project["items"]["nodes"]:
+                content = (node or {}).get("content") or {}
+                repository = (content.get("repository") or {}).get("nameWithOwner", "")
+                if content.get("number") is None or repository.lower() != self.repository.lower():
+                    continue
+                value = node.get("fieldValueByName") or {}
+                items[int(content["number"])] = (str(node["id"]), value.get("name"))
+            page = project["items"]["pageInfo"]
+            if not page.get("hasNextPage"):
+                break
+            variables["cursor"] = page["endCursor"]
+        field = project["field"]
+        options = {str(option["name"]): str(option["id"]) for option in field["options"]}
+        return GitHubProjectBoard(
+            self,
+            str(project["id"]),
+            str(project.get("title") or number),
+            str(field["id"]),
+            options,
+            items,
+        )
 
     # ------------------------------------------------------------------ writes
 

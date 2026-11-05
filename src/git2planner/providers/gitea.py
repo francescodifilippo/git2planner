@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from ..config import BoardConfig
 from ..errors import Git2PlannerError
 from ..http import HttpClient, StaticHeaderAuth
 from ..models import (
@@ -20,10 +21,52 @@ from ..models import (
     format_datetime,
     parse_datetime,
 )
-from .base import IssueProvider
+from .base import Board, IssueProvider
 
 PAGE_SIZE = 50
 _ATTACHMENT_PATH = re.compile(r"/attachments/[0-9a-fA-F-]{32,36}/?$")
+
+
+class GiteaProjectBoard(Board):
+    """A Gitea project board (Gitea 28 or newer)."""
+
+    def __init__(
+        self,
+        provider: GiteaProvider,
+        path: str,
+        title: str,
+        columns: dict[str, int],
+        items: dict[int, str],
+    ) -> None:
+        super().__init__(title, list(columns))
+        self.provider = provider
+        self.path = path
+        self.column_ids = columns
+        self.items = items
+
+    def column_of(self, issue: Issue) -> str | None:
+        return self.items.get(issue.number)
+
+    def move(self, issue: Issue, column: str | None) -> Issue:
+        if column is None or column not in self.column_ids:
+            return issue
+        global_id = issue.node_id
+        if global_id is None:
+            fresh = self.provider.get_issue(issue.number)
+            global_id = fresh.node_id if fresh else None
+        if global_id is None:
+            raise Git2PlannerError(f"cannot add issue #{issue.number} to the project")
+        column_id = self.column_ids[column]
+        if issue.number in self.items:
+            self.provider.http.request(
+                "POST", f"{self.path}/issues/{global_id}/move", json={"column_id": column_id}
+            )
+        else:
+            self.provider.http.request(
+                "POST", f"{self.path}/columns/{column_id}/issues/{global_id}"
+            )
+        self.items[issue.number] = column
+        return issue
 
 
 class GiteaProvider(IssueProvider):
@@ -102,6 +145,7 @@ class GiteaProvider(IssueProvider):
             attachments=self.merge_attachments(native, self.body_attachments(body)),
             author=GitUser(login=str(user["login"])) if user and user.get("login") else None,
             is_pull_request=bool(data.get("pull_request")),
+            node_id=str(data["id"]) if data.get("id") is not None else None,
         )
 
     def iter_issues(
@@ -157,6 +201,53 @@ class GiteaProvider(IssueProvider):
         return parsed.hostname == urlparse(self.web_url).hostname and bool(
             _ATTACHMENT_PATH.search(parsed.path)
         )
+
+    # ------------------------------------------------------------------ projects
+
+    def _pages(self, path: str, params: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
+        query: dict[str, Any] = {**(params or {}), "limit": PAGE_SIZE, "page": 1}
+        while True:
+            items = self.http.get_json(path, params=query) or []
+            yield from items
+            if len(items) < PAGE_SIZE:
+                return
+            query["page"] += 1
+
+    def _find_project(self, config: BoardConfig) -> tuple[str, str]:
+        owner = config.owner or self.config.owner
+        bases = [f"/repos/{self.repository}/projects", f"/orgs/{owner}/projects"]
+        wanted = str(config.project).strip()
+        for base in bases:
+            if wanted.isdigit():
+                response = self.http.request("GET", f"{base}/{wanted}", raise_for_status=False)
+                if response.status_code == 200:
+                    return f"{base}/{wanted}", str(response.json().get("title") or wanted)
+                continue
+            response = self.http.request(
+                "GET", base, params={"state": "all", "limit": 1}, raise_for_status=False
+            )
+            if response.status_code != 200:
+                continue
+            for project in self._pages(base, {"state": "all"}):
+                if str(project.get("title", "")).strip().lower() == wanted.lower():
+                    return f"{base}/{project['id']}", str(project["title"])
+        raise Git2PlannerError(
+            f"{self.display_name} project {wanted!r} not found in {self.repository} or {owner} "
+            "(project boards need Gitea 28 or newer)"
+        )
+
+    def load_board(self, config: BoardConfig) -> Board:
+        path, title = self._find_project(config)
+        columns = sorted(self._pages(f"{path}/columns"), key=lambda c: int(c.get("sorting") or 0))
+        column_ids = {str(column["title"]): int(column["id"]) for column in columns}
+        items: dict[int, str] = {}
+        for name, column_id in column_ids.items():
+            for issue in self._pages(f"{path}/columns/{column_id}/issues"):
+                repository = (issue.get("repository") or {}).get("full_name")
+                if repository and str(repository).lower() != self.repository.lower():
+                    continue
+                items[int(issue["number"])] = name
+        return GiteaProjectBoard(self, path, title, column_ids, items)
 
     # ------------------------------------------------------------------ writes
 

@@ -170,3 +170,28 @@ def test_load_config_errors(tmp_path):
     bad.write_text("syncs: [", encoding="utf-8")
     with pytest.raises(ConfigError, match="invalid YAML"):
         load_config(bad)
+
+
+def test_board_strategy_validation():
+    board = {"buckets": {"strategy": "board", "board": {"project": "7", "field": "Stage"}}}
+    sync = parse_config(minimal(**board), environ={}).syncs[0]
+    assert sync.buckets.board.project == "7"
+    assert sync.buckets.board.field == "Stage"
+    assert "bucket" in sync.planner_to_git.fields
+
+    with pytest.raises(ConfigError, match="project number"):
+        parse_config(
+            minimal(buckets={"strategy": "board", "board": {"project": "Roadmap"}}), environ={}
+        )
+    with pytest.raises(ConfigError, match="project is required"):
+        parse_config(minimal(buckets={"strategy": "board"}), environ={})
+    data = minimal(buckets={"strategy": "board"})
+    data["syncs"][0]["source"] = {
+        "provider": "forgejo",
+        "repository": "a/b",
+        "url": "https://x.test",
+    }
+    with pytest.raises(ConfigError, match="Forgejo"):
+        parse_config(data, environ={})
+    data["syncs"][0]["source"] = {"provider": "gitlab", "repository": "a/b"}
+    assert parse_config(data, environ={}).syncs[0].buckets.strategy == "board"

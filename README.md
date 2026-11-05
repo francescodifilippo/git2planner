@@ -35,8 +35,10 @@ work in **GitHub, Gitea, Forgejo or GitLab** and plan it in **Microsoft 365**.
 - **Attachments**: the issue and the files uploaded to it are added as task
   links. Optionally the files are copied into the group's SharePoint document
   library.
-- **Buckets**: one fixed bucket, a bucket per label or per milestone, plus a
-  "closed" bucket. Missing buckets are created automatically.
+- **Kanban**: buckets can mirror the columns of a project board (GitHub
+  Projects, Gitea, GitLab issue boards) in both directions. They can also be
+  one fixed bucket, or one per label or per milestone, plus a "closed" bucket.
+  Missing buckets are created automatically.
 - **Rich tasks**: title template, plain-text description with a link back to
   the issue, Markdown task lists turned into Planner checklists, priority from
   labels, due date from the issue or its milestone.
@@ -118,6 +120,7 @@ Every option is described in [docs/configuration.md](docs/configuration.md).
 | Labels                        | Planner labels (categories)           | Added/removed labels                       |
 | Priority labels               | Priority (urgent, important, …)       | Priority label                             |
 | Label / milestone             | Bucket                                | Bucket label (`label` strategy)            |
+| Project board column          | Bucket (`board` strategy)             | Card moved to the matching column          |
 | Assignees                     | Assignments                           | Assignees                                  |
 | Due date / milestone due date | Due date                              | Due date (Gitea, Forgejo, GitLab)          |
 | Body                          | Description (plain text + link)       | Optional (`fields: [description]`)         |
@@ -230,7 +233,7 @@ Exit codes: `0` success, `1` some items failed, `2` configuration error,
 
 Git tokens need read access to issues, plus write access for `planner-to-git`:
 
-- **GitHub**: a fine-grained token with *Issues* (read/write) and *Metadata* (read), or `github.token` in Actions.
+- **GitHub**: a fine-grained token with *Issues* (read/write) and *Metadata* (read), or `github.token` in Actions. For project boards, add the `project` scope (classic token) or the organisation *Projects* permission.
 - **Gitea / Forgejo**: `read:issue` (or `write:issue`), `read:repository` and `read:user`.
 - **GitLab**: `read_api` (or `api` for writes).
 

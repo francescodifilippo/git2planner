@@ -43,6 +43,7 @@ from .mapping import (
     CategoryMapper,
     bucket_label,
     bucket_name_for,
+    column_for_bucket,
     priority_band,
     priority_for,
     priority_label,
@@ -56,6 +57,7 @@ from .markdown import (
 )
 from .models import Attachment, Issue, IssueChanges, format_datetime, parse_datetime
 from .providers import IssueProvider, create_provider
+from .providers.base import Board
 from .state import StateStore, SyncState, TaskRecord
 
 log = logging.getLogger(__name__)
@@ -318,6 +320,7 @@ class _Context:
     categories: dict[int, list[str]] = field(default_factory=dict)
     index: dict[str, tuple[dict[str, Any], dict[str, Any]]] | None = None
     plan_tasks: dict[str, dict[str, Any]] | None = None
+    board: Board | None = None
     changes: int = 0
 
     @property
@@ -435,10 +438,24 @@ class SyncEngine:
             group_id=group_id,
             mapper=CategoryMapper(sync.categories, descriptions),
             resolver=AssigneeResolver(sync.assignees, self.planner, provider, group_id),
+            board=self._load_board(sync, provider),
             plan_details_etag=details_etag,
             buckets=buckets,
             bucket_names=names,
         )
+
+    @staticmethod
+    def _load_board(sync: SyncConfig, provider: IssueProvider) -> Board | None:
+        if sync.buckets.strategy != "board":
+            return None
+        board = provider.load_board(sync.buckets.board)
+        log.info(
+            "%s: project board %r with columns %s",
+            sync.name,
+            board.title,
+            ", ".join(repr(column) for column in board.columns) or "none",
+        )
+        return board
 
     def _collect(self, ctx: _Context, issue_numbers: list[int] | None) -> list[Issue]:
         provider, filters, state = ctx.provider, ctx.sync.filters, ctx.state
@@ -590,7 +607,12 @@ class SyncEngine:
 
         return DesiredTask(
             title=render_title(sync.task.title_template, issue, ctx.provider),
-            bucket_id=self._bucket_id(ctx, bucket_name_for(issue, sync.buckets)),
+            bucket_id=self._bucket_id(
+                ctx,
+                bucket_name_for(
+                    issue, sync.buckets, ctx.board.column_of(issue) if ctx.board else None
+                ),
+            ),
             percent_complete=0 if issue.is_open else 100,
             priority=priority_for(issue, sync.priority),
             due=due_value(issue.effective_due) if sync.task.due_date else None,
@@ -1190,16 +1212,26 @@ class SyncEngine:
                 and priority_band(priority) != priority_band(record.priority)
             ):
                 changes["priority"] = priority
-            if (
-                sync.buckets.strategy == "label"
-                and bucket_id
-                and bucket_id not in (record.bucket_id, closed_bucket)
-            ):
-                name = ctx.bucket_names.get(bucket_id, "")
-                if bucket_label(sync.buckets, name) or (
-                    name.strip().lower() == sync.buckets.default.strip().lower()
-                ):
-                    changes["bucket"] = bucket_id
+
+        strategy = sync.buckets.strategy
+        if (
+            ("bucket" in wanted or (strategy == "label" and "labels" in wanted))
+            and strategy in ("label", "board")
+            and bucket_id
+            and bucket_id not in (record.bucket_id, closed_bucket)
+        ):
+            name = ctx.bucket_names.get(bucket_id, "")
+            is_default = name.strip().lower() == sync.buckets.default.strip().lower()
+            if strategy == "label":
+                representable = bool(bucket_label(sync.buckets, name)) or is_default
+            else:
+                board = ctx.board
+                representable = board is not None and (
+                    column_for_bucket(sync.buckets, name, board.columns) is not None
+                    or (is_default and board.can_clear)
+                )
+            if representable:
+                changes["bucket"] = bucket_id
 
         if (
             "due_date" in wanted
@@ -1306,8 +1338,25 @@ class SyncEngine:
             )
             ctx.report.pulled += 1
             return
+        changed = False
         if not issue_changes.is_empty():
             issues[number] = ctx.provider.update_issue(number, issue_changes)
+            changed = True
+        if ctx.board is not None:
+            buckets = ctx.sync.buckets
+            column: str | None = None
+            move = False
+            if "bucket" in accepted:
+                name = ctx.bucket_names.get(accepted["bucket"], "")
+                column = column_for_bucket(buckets, name, ctx.board.columns)
+                move = True
+            elif accepted.get("state") == "closed" and buckets.closed:
+                column = column_for_bucket(buckets, buckets.closed, ctx.board.columns)
+                move = column is not None
+            if move:
+                issues[number] = ctx.board.move(issues[number], column)
+                changed = True
+        if changed:
             log.info("%s: updated issue #%d from Planner (%s)", ctx.sync.name, number, described)
             ctx.report.pulled += 1
         if "due" in accepted:
@@ -1390,11 +1439,13 @@ class SyncEngine:
                 sync.priority.mapping[new_label] if new_label else sync.priority.default
             )
         if "bucket" in accepted:
-            for label in sync.buckets.mapping:
-                remove_label(label)
-            new_label = bucket_label(sync.buckets, ctx.bucket_names.get(accepted["bucket"], ""))
-            if new_label:
-                add_label(new_label)
+            if sync.buckets.strategy == "label":
+                for label in sync.buckets.mapping:
+                    remove_label(label)
+                name = ctx.bucket_names.get(accepted["bucket"], "")
+                new_label = bucket_label(sync.buckets, name)
+                if new_label:
+                    add_label(new_label)
             baseline["bucket_id"] = accepted["bucket"]
         if labels != issue.label_names:
             changes.labels = labels
@@ -1476,7 +1527,8 @@ class SyncEngine:
             label = priority_label(sync.priority, priority)
             if label and label not in labels:
                 labels.append(label)
-        label = bucket_label(sync.buckets, ctx.bucket_names.get(str(task.get("bucketId")), ""))
+        bucket_name = ctx.bucket_names.get(str(task.get("bucketId")), "")
+        label = bucket_label(sync.buckets, bucket_name)
         if label and label not in labels:
             labels.append(label)
 
@@ -1508,6 +1560,10 @@ class SyncEngine:
 
         issue = ctx.provider.create_issue(changes)
         log.info("%s: created issue #%d from task %r", sync.name, issue.number, title)
+        if ctx.board is not None:
+            column = column_for_bucket(sync.buckets, bucket_name, ctx.board.columns)
+            if column is not None:
+                issue = ctx.board.move(issue, column)
         record = TaskRecord(
             task_id=task_id,
             issue_url=issue.url,

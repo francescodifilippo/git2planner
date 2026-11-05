@@ -96,14 +96,44 @@ is removed.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `strategy` | `fixed` | `fixed`: always `default`. `label`: the first label listed in `mapping` that the issue has. `milestone`: a bucket named after the milestone, or `mapping[milestone]`. |
-| `default` | `To do` | Bucket used when nothing else applies. |
-| `mapping` | `{}` | `label: bucket` or `milestone: bucket`. |
+| `strategy` | `fixed` | `fixed`: always `default`. `label`: the first label listed in `mapping` that the issue has. `milestone`: a bucket named after the milestone, or `mapping[milestone]`. `board`: the issue's column on a project board (see below). |
+| `default` | `To do` | Bucket used when nothing else applies, for example for issues that are not on the board. |
+| `mapping` | `{}` | `label: bucket`, `milestone: bucket` or `board column: bucket`. |
 | `closed` | – | Bucket for closed issues. In two-way mode, moving a task into this bucket closes the issue. |
 | `create_missing` | `true` | Create buckets that do not exist yet. |
+| `board` | – | The project board used by the `board` strategy (see below). |
 
 A task is only moved when the bucket computed from its issue changes, so
 tasks dragged around in Planner stay where they were put.
+
+#### Project boards (`strategy: board`)
+
+The columns of a project board become Planner buckets with the same name,
+unless `mapping` renames them. Moving a card to another column moves the
+task. In two-way mode, dragging a task into another bucket moves the card
+back on the board. Issues that are not on the board yet are added to it.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `board.project` | – | **GitHub**: the project number, from `github.com/orgs/<org>/projects/<number>`. **Gitea**: the project id or title. **GitLab**: the board id or name; the first board is used when it is omitted. |
+| `board.owner` | repository owner | User or organisation owning the project (GitHub, Gitea). |
+| `board.field` | `Status` | GitHub single-select field holding the columns. |
+
+| Provider | Board | Requirements |
+|----------|-------|--------------|
+| GitHub | Projects (both organisation and user projects) | A token with the `project` scope (classic) or the *Projects* permission (fine-grained, organisation projects). The Actions `GITHUB_TOKEN` cannot read projects. |
+| Gitea | Repository or organisation projects | Gitea 28 or newer. |
+| GitLab | Issue boards | Columns are the boards' label lists, so moving a card swaps its list label. |
+| Forgejo | – | No project API yet: use the `label` strategy. |
+
+```yaml
+buckets:
+  strategy: board
+  board: {project: 4}
+  default: Backlog
+  mapping:
+    Todo: To do          # column "Todo" is shown as bucket "To do"
+```
 
 ### `categories`
 
@@ -170,7 +200,7 @@ Used when `direction` is `planner-to-git` or `both`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `fields` | `[state, title, assignees, labels, due_date, checklist]` | What may flow back to Git. `labels` covers categories, priority and the bucket label. Add `description` to replace the issue body with the Planner description. Markdown formatting is lost when you do this, so it is opt-in. |
+| `fields` | `[state, title, assignees, labels, bucket, due_date, checklist]` | What may flow back to Git. `labels` covers categories and priority. `bucket` moves the card on the project board (`board` strategy) or swaps the bucket label (`label` strategy). Add `description` to replace the issue body with the Planner description. Markdown formatting is lost when you do this, so it is opt-in. |
 | `create_issues` | `false` | Open an issue for each Planner task that is not linked to one yet. |
 | `buckets` | `[]` | Only tasks in these buckets become issues (empty: all buckets). |
 | `include_completed` | `false` | Also create issues for completed tasks. |

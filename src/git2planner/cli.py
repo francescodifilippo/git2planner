@@ -26,7 +26,7 @@ from .config import (
 from .errors import AuthError, ConfigError, Git2PlannerError, HTTPError, PermissionDeniedError
 from .graph import GraphClient
 from .mapping import CATEGORY_SLOTS, PLANNER_CATEGORY_COLORS
-from .providers import create_provider
+from .providers import IssueProvider, create_provider
 from .state import StateStore
 from .sync import SyncEngine, SyncReport
 from .templates import example_config
@@ -165,6 +165,8 @@ def _validate_sync(checks: _Checks, graph: GraphClient, sync: SyncConfig) -> Non
     print(f"\n{sync.name}")
     provider = create_provider(sync.source)
     checks.run(f"{provider.display_name} repository", provider.check_access)
+    if sync.buckets.strategy == "board":
+        checks.run("project board", partial(_board_summary, provider, sync))
     plan: dict[str, Any] = {}
 
     def read_plan() -> str:
@@ -181,6 +183,12 @@ def _validate_sync(checks: _Checks, graph: GraphClient, sync: SyncConfig) -> Non
         checks.run("group members", partial(_member_summary, graph, group_id))
     if group_id and sync.attachments.mode == "upload":
         checks.run("group document library", partial(_drive_summary, graph, group_id))
+
+
+def _board_summary(provider: IssueProvider, sync: SyncConfig) -> str:
+    board = provider.load_board(sync.buckets.board)
+    columns = ", ".join(repr(column) for column in board.columns) or "no columns"
+    return f"{board.title!r}: {columns}"
 
 
 def _member_summary(graph: GraphClient, group_id: str) -> str:

@@ -87,6 +87,8 @@ class Issue:
     author: GitUser | None = None
     is_pull_request: bool = False
     state_reason: str | None = None
+    node_id: str | None = None
+    """Provider-wide id (GitHub node id, Gitea/GitLab global issue id)."""
 
     @property
     def is_open(self) -> bool:

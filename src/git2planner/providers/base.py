@@ -12,8 +12,8 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urlparse
 
 from ..attachments import filename_from_url
-from ..config import SourceConfig
-from ..errors import AttachmentError, HTTPError
+from ..config import BoardConfig, SourceConfig
+from ..errors import AttachmentError, ConfigError, HTTPError
 from ..http import HttpClient
 from ..markdown import extract_links
 from ..models import Attachment, GitUser, Issue, IssueChanges
@@ -21,6 +21,25 @@ from ..models import Attachment, GitUser, Issue, IssueChanges
 log = logging.getLogger(__name__)
 
 _GENERIC_ALT = re.compile(r"^(image|img|screenshot|untitled|attachment)$", re.IGNORECASE)
+
+
+class Board(ABC):
+    """A project board (kanban) whose columns are mirrored as Planner buckets."""
+
+    #: Whether an issue can be taken off the board's columns (label-based boards).
+    can_clear: bool = False
+
+    def __init__(self, title: str, columns: list[str]) -> None:
+        self.title = title
+        self.columns = columns
+
+    @abstractmethod
+    def column_of(self, issue: Issue) -> str | None:
+        """The column holding ``issue``, or ``None`` when it is not on the board."""
+
+    @abstractmethod
+    def move(self, issue: Issue, column: str | None) -> Issue:
+        """Put ``issue`` into ``column`` (adding it to the board if needed)."""
 
 
 class IssueProvider(ABC):
@@ -71,6 +90,12 @@ class IssueProvider(ABC):
     @abstractmethod
     def is_attachment_url(self, url: str) -> bool:
         """Whether ``url`` points to a file uploaded to this provider."""
+
+    def load_board(self, config: BoardConfig) -> Board:
+        """Read the project board used by the ``board`` bucket strategy."""
+        raise ConfigError(
+            f"{self.display_name} has no project board API; use the 'label' bucket strategy"
+        )
 
     @abstractmethod
     def create_issue(self, changes: IssueChanges) -> Issue:

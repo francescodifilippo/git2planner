@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-11-05
+
+### Added
+
+- `buckets.strategy: board`: Planner buckets mirror the columns of a project
+  board, in both directions. Moving a card moves the task; dragging a task
+  moves the card, and adds the issue to the board if needed. Supported boards:
+  GitHub Projects (single-select field, `Status` by default), Gitea project
+  boards (Gitea 28 or newer) and GitLab issue boards (label lists).
+- `bucket` field in `planner_to_git.fields`, which controls whether bucket moves in
+  Planner are written back to Git.
+- `git2planner validate` checks access to the project board.
+
+### Changed
+
+- Release workflow: can be started from the Actions tab, can be re-run for
+  a published version, and uses the Node 24 releases of the GitHub actions.
+
 ## [1.0.0] - 2026-11-02
 
 First stable release.
@@ -40,4 +58,5 @@ First stable release.
 - Docker image, composite GitHub Action, and examples for Gitea/Forgejo
   Actions, GitLab CI, cron and systemd.
 
+[1.1.0]: https://github.com/francescodifilippo/git2planner/releases/tag/v1.1.0
 [1.0.0]: https://github.com/francescodifilippo/git2planner/releases/tag/v1.0.0

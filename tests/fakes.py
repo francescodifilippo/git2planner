@@ -13,7 +13,7 @@ from git2planner.errors import NotFoundError
 from git2planner.graph import GraphClient
 from git2planner.http import HttpClient
 from git2planner.models import Attachment, GitUser, Issue, IssueChanges, Label
-from git2planner.providers.base import IssueProvider
+from git2planner.providers.base import Board, IssueProvider
 
 GROUP_ID = "group-1"
 PLAN_ID = "plan-1"
@@ -233,6 +233,24 @@ class FakePlanner:
         return {"webUrl": f"https://contoso.sharepoint.com/sites/eng/Shared%20Documents/{path}"}
 
 
+class FakeBoard(Board):
+    def __init__(self, columns: list[str], items: dict[int, str] | None = None) -> None:
+        super().__init__("Roadmap", columns)
+        self.items = dict(items or {})
+        self.moves: list[tuple[int, str | None]] = []
+
+    def column_of(self, issue: Issue) -> str | None:
+        return self.items.get(issue.number)
+
+    def move(self, issue: Issue, column: str | None) -> Issue:
+        self.moves.append((issue.number, column))
+        if column is None:
+            self.items.pop(issue.number, None)
+        else:
+            self.items[issue.number] = column
+        return issue
+
+
 class FakeProvider(IssueProvider):
     kind = "github"
     display_name = "GitHub"
@@ -246,6 +264,11 @@ class FakeProvider(IssueProvider):
         self.updates: list[tuple[int, IssueChanges]] = []
         self.created: list[IssueChanges] = []
         self.downloads: dict[str, bytes] = {}
+        self.board: FakeBoard | None = None
+
+    def load_board(self, config: Any) -> Board:
+        assert self.board is not None
+        return self.board
 
     @property
     def web_url(self) -> str:

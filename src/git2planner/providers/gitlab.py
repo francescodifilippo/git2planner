@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from ..config import BoardConfig
 from ..errors import AttachmentError, Git2PlannerError
 from ..http import HttpClient, StaticHeaderAuth
 from ..models import (
@@ -20,12 +21,35 @@ from ..models import (
     format_datetime,
     parse_datetime,
 )
-from .base import IssueProvider
+from .base import Board, IssueProvider
 
 PUBLIC_WEB = "https://gitlab.com"
 _STATE_PARAM = {"open": "opened", "closed": "closed", "all": "all"}
 _RELATIVE_UPLOAD = re.compile(r"""(\]\(\s*<?|\bsrc\s*=\s*["']|\bhref\s*=\s*["'])/uploads/""")
 _UPLOAD_PATH = re.compile(r"/uploads/([0-9a-fA-F]{16,64})/([^/?#]+)$")
+
+
+class GitLabLabelBoard(Board):
+    """A GitLab issue board: every list is backed by a label."""
+
+    can_clear = True
+
+    def __init__(self, provider: GitLabProvider, title: str, columns: list[str]) -> None:
+        super().__init__(title, columns)
+        self.provider = provider
+        self._lowered = {column.lower() for column in columns}
+
+    def column_of(self, issue: Issue) -> str | None:
+        labels = {name.lower() for name in issue.label_names}
+        return next((column for column in self.columns if column.lower() in labels), None)
+
+    def move(self, issue: Issue, column: str | None) -> Issue:
+        labels = [name for name in issue.label_names if name.lower() not in self._lowered]
+        if column is not None:
+            labels.append(column)
+        if labels == issue.label_names:
+            return issue
+        return self.provider.update_issue(issue.number, IssueChanges(labels=labels))
 
 
 class GitLabProvider(IssueProvider):
@@ -95,6 +119,7 @@ class GitLabProvider(IssueProvider):
             author=GitUser(login=str(author["username"]))
             if author and author.get("username")
             else None,
+            node_id=str(data["id"]) if data.get("id") is not None else None,
         )
 
     def iter_issues(
@@ -170,6 +195,31 @@ class GitLabProvider(IssueProvider):
                 if "limit" in str(exc):
                     raise
         return super().download(attachment, max_bytes)
+
+    # ------------------------------------------------------------------ boards
+
+    def load_board(self, config: BoardConfig) -> Board:
+        boards = list(self.http.paginate(f"/projects/{self.project_id}/boards"))
+        wanted = str(config.project).strip().lower() if config.project else None
+        board = next(
+            (
+                item
+                for item in boards
+                if wanted is None
+                or wanted in (str(item.get("id")), str(item.get("name", "")).lower())
+            ),
+            None,
+        )
+        if board is None:
+            name = f"{config.project!r} " if config.project else ""
+            raise Git2PlannerError(f"GitLab issue board {name}not found in {self.repository}")
+        lists = sorted(board.get("lists") or [], key=lambda item: int(item.get("position") or 0))
+        columns = [
+            str(item["label"]["name"])
+            for item in lists
+            if isinstance(item.get("label"), dict) and item["label"].get("name")
+        ]
+        return GitLabLabelBoard(self, str(board.get("name") or board.get("id")), columns)
 
     # ------------------------------------------------------------------ writes
 

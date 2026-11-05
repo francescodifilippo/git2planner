@@ -360,3 +360,193 @@ def test_factory_and_project_url():
     assert isinstance(provider, GitLabProvider)
     assert provider.project_web_url == "https://gl.test/g/p"
     assert provider.api_url == "https://gl.test/api/v4"
+
+
+# --------------------------------------------------------------------------- project boards
+
+
+def _graphql_body(call):
+    return json.loads(call.request.body)
+
+
+@responses.activate
+def test_github_project_board_reads_and_moves_cards():
+    from git2planner.config import BoardConfig
+    from git2planner.models import Issue
+
+    def project(items, has_next, cursor=None):
+        return {
+            "data": {
+                "repositoryOwner": {
+                    "projectV2": {
+                        "id": "PVT_1",
+                        "title": "Roadmap",
+                        "field": {
+                            "id": "F_1",
+                            "name": "Status",
+                            "options": [
+                                {"id": "o1", "name": "Todo"},
+                                {"id": "o2", "name": "In Progress"},
+                                {"id": "o3", "name": "Done"},
+                            ],
+                        },
+                        "items": {
+                            "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+                            "nodes": items,
+                        },
+                    }
+                }
+            }
+        }
+
+    def item(item_id, number, column, repo="acme/app"):
+        return {
+            "id": item_id,
+            "fieldValueByName": {"name": column} if column else None,
+            "content": {"number": number, "repository": {"nameWithOwner": repo}},
+        }
+
+    responses.post(
+        f"{GH}/graphql",
+        json=project(
+            [item("I1", 1, "In Progress"), item("IX", 1, "Done", "acme/other")], True, "c1"
+        ),
+    )
+    responses.post(
+        f"{GH}/graphql", json=project([item("I2", 2, None), {"id": "draft", "content": {}}], False)
+    )
+    responses.post(
+        f"{GH}/graphql",
+        json={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "I1"}}}},
+    )
+    responses.post(f"{GH}/graphql", json={"data": {"addProjectV2ItemById": {"item": {"id": "I3"}}}})
+    responses.post(
+        f"{GH}/graphql",
+        json={"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "I3"}}}},
+    )
+
+    board = github().load_board(BoardConfig(project="5"))
+    assert board.title == "Roadmap"
+    assert board.columns == ["Todo", "In Progress", "Done"]
+    first = Issue(1, "a", "", "open", "u1", "acme/app", node_id="N1")
+    third = Issue(3, "c", "", "open", "u3", "acme/app", node_id="N3")
+    assert board.column_of(first) == "In Progress"
+    assert board.column_of(Issue(2, "b", "", "open", "u2", "acme/app")) is None
+    assert _graphql_body(responses.calls[0])["variables"] == {
+        "owner": "acme",
+        "number": 5,
+        "field": "Status",
+    }
+    assert _graphql_body(responses.calls[1])["variables"]["cursor"] == "c1"
+
+    board.move(first, "Done")
+    assert _graphql_body(responses.calls[2])["variables"] == {
+        "project": "PVT_1",
+        "item": "I1",
+        "field": "F_1",
+        "option": "o3",
+    }
+    board.move(third, "Todo")
+    assert _graphql_body(responses.calls[3])["variables"] == {"project": "PVT_1", "content": "N3"}
+    assert board.column_of(third) == "Todo"
+
+
+@responses.activate
+def test_github_graphql_errors_are_reported():
+    from git2planner.config import BoardConfig
+    from git2planner.errors import HTTPError
+
+    responses.post(
+        f"{GH}/graphql",
+        json={"errors": [{"message": "Your token has not been granted the required scopes"}]},
+    )
+    with pytest.raises(HTTPError, match="required scopes"):
+        github().load_board(BoardConfig(project="5"))
+
+
+@responses.activate
+def test_gitea_project_board_reads_and_moves_cards():
+    from git2planner.config import BoardConfig
+    from git2planner.models import Issue
+
+    base = f"{GITEA}/api/v1/repos/acme/app/projects"
+    responses.get(f"{base}/3", json={"id": 3, "title": "Sprint"})
+    responses.get(
+        f"{base}/3/columns",
+        json=[
+            {"id": 11, "title": "Doing", "sorting": 2},
+            {"id": 10, "title": "Backlog", "sorting": 1},
+        ],
+    )
+    responses.get(
+        f"{base}/3/columns/10/issues",
+        json=[{"number": 1, "id": 501, "repository": {"full_name": "acme/app"}}],
+    )
+    responses.get(
+        f"{base}/3/columns/11/issues",
+        json=[{"number": 9, "id": 909, "repository": {"full_name": "acme/elsewhere"}}],
+    )
+    responses.post(f"{base}/3/issues/501/move", status=204)
+    responses.post(f"{base}/3/columns/11/issues/502", status=201)
+
+    board = gitea().load_board(BoardConfig(project="3"))
+    assert board.columns == ["Backlog", "Doing"]
+    first = Issue(1, "a", "", "open", "u", "acme/app", node_id="501")
+    second = Issue(2, "b", "", "open", "u", "acme/app", node_id="502")
+    assert board.column_of(first) == "Backlog"
+    assert board.column_of(Issue(9, "x", "", "open", "u", "acme/app")) is None
+    board.move(first, "Doing")
+    assert json.loads(responses.calls[-1].request.body) == {"column_id": 11}
+    board.move(second, "Doing")
+    assert responses.calls[-1].request.url.endswith("/columns/11/issues/502")
+    assert board.column_of(second) == "Doing"
+
+
+@responses.activate
+def test_gitea_project_lookup_by_title_and_missing_api():
+    from git2planner.config import BoardConfig
+    from git2planner.errors import Git2PlannerError
+
+    base = f"{GITEA}/api/v1/repos/acme/app/projects"
+    responses.get(base, json=[{"id": 4, "title": "Roadmap"}])
+    responses.get(f"{base}/4/columns", json=[])
+    assert gitea().load_board(BoardConfig(project="roadmap")).title == "Roadmap"
+
+    responses.reset()
+    responses.get(f"{base}/8", status=404, json={})
+    responses.get(f"{GITEA}/api/v1/orgs/acme/projects/8", status=404, json={})
+    with pytest.raises(Git2PlannerError, match="Gitea 28"):
+        gitea().load_board(BoardConfig(project="8"))
+
+
+@responses.activate
+def test_gitlab_board_uses_list_labels():
+    from git2planner.config import BoardConfig
+
+    responses.get(
+        f"{GITLAB}/projects/{PROJECT}/boards",
+        json=[
+            {
+                "id": 1,
+                "name": "Development",
+                "lists": [
+                    {"id": 2, "position": 1, "label": {"name": "workflow::review"}},
+                    {"id": 1, "position": 0, "label": {"name": "workflow::doing"}},
+                    {"id": 3, "position": 2, "label": None, "assignee": {"username": "x"}},
+                ],
+            }
+        ],
+    )
+    responses.put(
+        f"{GITLAB}/projects/{PROJECT}/issues/4",
+        json=gl_issue(4, labels=["bug", "workflow::review"]),
+    )
+    provider = gitlab()
+    board = provider.load_board(BoardConfig())
+    assert board.columns == ["workflow::doing", "workflow::review"]
+    assert board.can_clear
+    issue = provider._to_issue(gl_issue(4, labels=[{"name": "bug"}, {"name": "workflow::doing"}]))
+    assert board.column_of(issue) == "workflow::doing"
+    moved = board.move(issue, "workflow::review")
+    assert json.loads(responses.calls[-1].request.body) == {"labels": "bug,workflow::review"}
+    assert board.column_of(moved) == "workflow::review"

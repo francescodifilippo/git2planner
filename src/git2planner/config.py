@@ -18,7 +18,7 @@ from .errors import ConfigError
 
 PROVIDERS = ("github", "gitea", "forgejo", "gitlab")
 ISSUE_STATES = ("open", "closed", "all")
-BUCKET_STRATEGIES = ("fixed", "label", "milestone")
+BUCKET_STRATEGIES = ("fixed", "label", "milestone", "board")
 CATEGORY_MODES = ("auto", "explicit", "off")
 ATTACHMENT_MODES = ("link", "upload", "off")
 ON_CLOSE = ("complete", "delete", "ignore")
@@ -32,8 +32,17 @@ DIRECTION_ALIASES = {
     "two-way": "both",
 }
 CONFLICT_POLICIES = ("git", "planner")
-PULL_FIELDS = ("state", "title", "assignees", "labels", "due_date", "checklist", "description")
-DEFAULT_PULL_FIELDS = ("state", "title", "assignees", "labels", "due_date", "checklist")
+PULL_FIELDS = (
+    "state",
+    "title",
+    "assignees",
+    "labels",
+    "bucket",
+    "due_date",
+    "checklist",
+    "description",
+)
+DEFAULT_PULL_FIELDS = ("state", "title", "assignees", "labels", "bucket", "due_date", "checklist")
 AUTH_METHODS = (
     "auto",
     "client_secret",
@@ -128,12 +137,25 @@ class FilterConfig:
 
 
 @dataclass
+class BoardConfig:
+    """A project board whose columns are mirrored as Planner buckets."""
+
+    project: str | None = None
+    """GitHub project number, Gitea project id or title, GitLab board id or name."""
+    owner: str | None = None
+    """User or organisation owning the project (GitHub, Gitea); defaults to the repository owner."""
+    field: str = "Status"
+    """GitHub Projects single-select field holding the column."""
+
+
+@dataclass
 class BucketConfig:
     strategy: str = "fixed"
     default: str = "To do"
     mapping: dict[str, str] = field(default_factory=dict)
     closed: str | None = None
     create_missing: bool = True
+    board: BoardConfig = field(default_factory=BoardConfig)
 
 
 @dataclass
@@ -576,15 +598,34 @@ def _parse_sync(raw: Any, index: int, environ: Mapping[str, str]) -> SyncConfig:
     )
 
     buckets_s = section.section(
-        "buckets", {"strategy", "default", "mapping", "closed", "create_missing"}
+        "buckets", {"strategy", "default", "mapping", "closed", "create_missing", "board"}
     )
+    board_s = buckets_s.section("board", {"project", "owner", "field"})
     buckets = BucketConfig(
         strategy=buckets_s.text("strategy", "fixed", choices=BUCKET_STRATEGIES) or "fixed",
         default=buckets_s.text("default", "To do") or "To do",
         mapping={key: str(value) for key, value in buckets_s.str_map("mapping").items()},
         closed=buckets_s.text("closed"),
         create_missing=buckets_s.flag("create_missing", True),
+        board=BoardConfig(
+            project=board_s.text("project"),
+            owner=board_s.text("owner"),
+            field=board_s.text("field", "Status") or "Status",
+        ),
     )
+    if buckets.strategy == "board":
+        if source.provider == "forgejo":
+            raise ConfigError(
+                f"{buckets_s.path}.strategy: Forgejo has no project board API yet, "
+                "use the 'label' strategy instead"
+            )
+        if source.provider in ("github", "gitea") and not buckets.board.project:
+            raise ConfigError(f"{board_s.path}.project is required for {source.provider}")
+        if source.provider == "github" and not str(buckets.board.project).isdigit():
+            raise ConfigError(
+                f"{board_s.path}.project: use the project number shown in its URL "
+                "(.../projects/<number>)"
+            )
 
     categories_s = section.section("categories", {"mode", "mapping", "exclude", "create_missing"})
     categories = CategoryConfig(

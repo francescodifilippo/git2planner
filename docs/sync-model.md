@@ -37,7 +37,9 @@ Planner terms:
      skips it here (the push step then overwrites Planner), while
      `conflicts: planner` writes the Planner value to Git;
    - a task that no longer exists is marked as deleted (and the issue closed
-     when `close_deleted` is set).
+     when `close_deleted` is set);
+   - a task dragged to another bucket moves the card on the project board
+     (`board` strategy) or swaps the issue's bucket label (`label` strategy).
 
    With `create_issues: true`, tasks that are not linked to any issue become
    new issues, and their current values become the baseline.
